@@ -34,6 +34,44 @@ BATCH_INTERVAL_S = 0.05
 PARTIAL_FLUSH_S = 0.5
 ## Delay (s) between attempts to (re)open the port when auto-reconnect is on.
 RECONNECT_INTERVAL_S = 1.0
+## Time (s) RTS (EN) is held active by reset_esp(); esptool uses 0.1 s, 0.2 s on USB-Serial-JTAG.
+RESET_PULSE_S = 0.2
+
+
+def _set_rts(ser: serial.Serial, value: bool) -> None:
+    """Set RTS and rewrite DTR with its current value, like esptool.
+
+    On Windows the usbser.sys driver (USB-Serial-JTAG / CDC ports) only applies
+    an RTS change when DTR is written too; rewriting DTR is harmless on Linux
+    and on USB-UART bridges (CP210x, CH340, FTDI).
+
+    @param ser    Open port.
+    @param value  New RTS state (True = active, pulls EN low).
+    @return None.
+    """
+    ser.rts = value
+    ser.dtr = ser.dtr
+
+
+def reset_esp(ser: serial.Serial) -> None:
+    """Hard-reset the ESP32 into the application (esptool "hard reset"), on Windows and Linux.
+
+    With DTR inactive (GPIO0 high, normal boot) RTS is pulsed active for
+    RESET_PULSE_S. This works with the usual auto-reset circuit of USB-UART
+    bridges (RTS -> EN, DTR -> GPIO0) and with the USB-Serial-JTAG of the
+    ESP32-S3/C3/C6/H2, which maps the same lines internally. Input already
+    buffered by the OS is discarded while the chip is held in reset, so the
+    log starts at the boot and no boot line is lost.
+
+    @param ser  Open port.
+    @throws serial.SerialException, OSError  when the driver rejects the line change.
+    @return None.
+    """
+    ser.dtr = False
+    _set_rts(ser, True)
+    ser.reset_input_buffer()
+    time.sleep(RESET_PULSE_S)
+    _set_rts(ser, False)
 
 
 class SerialReader(QThread):
@@ -43,7 +81,9 @@ class SerialReader(QThread):
     port errors (board reset, USB unplugged): it closes the port, waits
     RECONNECT_INTERVAL_S and reopens it, keeping the same recording file. The
     port is opened with DTR and RTS low, like idf.py monitor, so opening it does
-    not reset the ESP32-S3 nor put it in download mode.
+    not reset the ESP32 nor put it in download mode. With reset_on_connect the
+    ESP32 is reset (reset_esp()) right after the first successful open, so the
+    boot log is captured; automatic reconnections never reset it.
     """
 
     ## Batch of parsed lines (list[LogEntry]); emitted from the worker thread.
@@ -60,6 +100,7 @@ class SerialReader(QThread):
         auto_reconnect: bool,
         record_dir: Path | None,
         record_pc_time: bool,
+        reset_on_connect: bool = False,
         parent=None,
     ) -> None:
         """Store the connection settings; nothing is opened until start() runs run().
@@ -69,6 +110,7 @@ class SerialReader(QThread):
         @param auto_reconnect  Keep retrying to open the port and reopen it after errors.
         @param record_dir      Folder of the continuous recording, or None to not record.
         @param record_pc_time  Prefix each recorded line with the PC time.
+        @param reset_on_connect  Reset the ESP32 after the first successful open of the port.
         @param parent          Qt parent (the MainWindow).
         """
         super().__init__(parent)
@@ -82,6 +124,8 @@ class SerialReader(QThread):
         self.record_dir = record_dir
         ## Prefix recorded lines with the PC time.
         self.record_pc_time = record_pc_time
+        ## Reset the ESP32 on the next successful open (cleared after the first one).
+        self.reset_on_connect = reset_on_connect
         ## Stop request flag, set by stop() from the GUI thread and polled by the worker.
         self._stop = False
         ## Parser owned by the worker thread (colour state).
@@ -154,10 +198,10 @@ class SerialReader(QThread):
 
     # -- serial --------------------------------------------------------------
     def _open_serial(self) -> serial.Serial:
-        """Open the port with a 50 ms read timeout and DTR/RTS low.
+        """Open the port with a 50 ms read timeout and DTR/RTS low (no reset).
 
         DTR/RTS are set before open() so pyserial applies them when opening.
-        On the ESP32-S3 auto-reset circuit (and on the USB-Serial-JTAG) these
+        On the ESP32 auto-reset circuit (and on the USB-Serial-JTAG) these
         lines drive EN/GPIO0, so keeping them low avoids resetting the board.
 
         @return The open serial.Serial.
@@ -181,7 +225,8 @@ class SerialReader(QThread):
         connection (the reason is shown in the final "Desconectado — ..." status).
         With it, open errors show "Aguardando {port}…" and are retried every
         RECONNECT_INTERVAL_S. The parser colour state is reset on every
-        (re)connection. Always ends by closing the recording file and emitting
+        (re)connection. With reset_on_connect the ESP32 is reset once, after the
+        first successful open. Always ends by closing the recording file and emitting
         a "Desconectado" status; QThread.finished then reaches the GUI.
 
         @return None.
@@ -199,9 +244,14 @@ class SerialReader(QThread):
                     self._sleep(RECONNECT_INTERVAL_S)
                     continue
 
-                self.status_changed.emit(f"Conectado em {self.port} @ {self.baudrate}", True)
                 self._parser.reset()
                 try:
+                    if self.reset_on_connect:
+                        self.reset_on_connect = False
+                        reset_esp(ser)
+                        self.status_changed.emit(f"Conectado em {self.port} @ {self.baudrate} (ESP32 resetado)", True)
+                    else:
+                        self.status_changed.emit(f"Conectado em {self.port} @ {self.baudrate}", True)
                     self._read_loop(ser)
                 except (serial.SerialException, OSError) as exc:
                     self._error = f"conexão perdida: {exc}"

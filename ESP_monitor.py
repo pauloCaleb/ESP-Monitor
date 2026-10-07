@@ -394,7 +394,7 @@ class MainWindow(QMainWindow):
     on_record_file() and on_reader_finished(), which Qt runs in the GUI thread.
     A 500 ms QTimer refreshes the level/TAG counters and the status bar.
     Preferences (port, baud, reconnect, recording folder and options, memory
-    limit, last save folder) are kept with QSettings("ESP", "ESP_monitor")
+    limit, reset on connect, last save folder) are kept with QSettings("ESP", "ESP_monitor")
     (registry on Windows, ~/.config/ESP/ESP_monitor.conf on Linux).
     """
     def __init__(self, args) -> None:
@@ -413,6 +413,10 @@ class MainWindow(QMainWindow):
         self.reader: SerialReader | None = None
         ## Current recording file ("" when not recording).
         self.record_path = ""
+        ## True while load_file() is reading a file (connect, open and clear are refused).
+        self._loading = False
+        ## Set by closeEvent() to stop a load_file() in progress.
+        self._abort_load = False
 
         ## Log model (all entries and filters).
         self.model = LogModel(self)
@@ -463,7 +467,7 @@ class MainWindow(QMainWindow):
 
     # -- UI construction ---------------------------------------------------
     def _build_toolbars(self) -> None:
-        """Create the "Conexão" toolbar (port, refresh, baud, connect, auto-reconnect, clear, auto-scroll) and the "Gravação" toolbar (recording folder, PC time option, memory limit 10 000 to 5 000 000 lines).
+        """Create the "Conexão" toolbar (port, refresh, baud, connect, reset on connect, auto-reconnect, clear, auto-scroll) and the "Gravação" toolbar (recording folder, PC time option, memory limit 10 000 to 5 000 000 lines).
 
         The default recording folder is ~/ESP_logs.
 
@@ -499,6 +503,16 @@ class MainWindow(QMainWindow):
         self.connect_btn.clicked.connect(self.toggle_connection)
         tb.addSeparator()
         tb.addWidget(self.connect_btn)
+
+        ## "Resetar ESP32 ao conectar" option.
+        self.reset_chk = QCheckBox("Resetar ESP32 ao conectar")
+        self.reset_chk.setToolTip(
+            "Marcado: pulsa RTS (EN) ao abrir a porta, como o esptool, para ver o boot desde o início.\n"
+            "Desmarcado: DTR e RTS ficam desligados e o ESP32 continua rodando."
+        )
+        self.reset_chk.setChecked(self.settings.value("reset_on_connect", False, type=bool))
+        tb.addSeparator()
+        tb.addWidget(self.reset_chk)
 
         ## "Reconectar automaticamente" option.
         self.reconnect_chk = QCheckBox("Reconectar automaticamente")
@@ -672,8 +686,9 @@ class MainWindow(QMainWindow):
         @return None.
         """
         m = self.menuBar().addMenu("&Arquivo")
-        act = m.addAction("Abrir log…", self.open_file)
-        act.setShortcut(QKeySequence.Open)
+        ## "Abrir log…" action (disabled while connected or loading a file).
+        self.open_act = m.addAction("Abrir log…", self.open_file)
+        self.open_act.setShortcut(QKeySequence.Open)
         act = m.addAction("Salvar tudo como .log…", lambda: self.save_file(only_visible=False))
         act.setShortcut(QKeySequence.Save)
         act = m.addAction("Salvar linhas visíveis (filtradas)…", lambda: self.save_file(only_visible=True))
@@ -730,10 +745,12 @@ class MainWindow(QMainWindow):
         return text.split(" — ")[0].strip()
 
     def toggle_connection(self) -> None:
-        """Slot of the "Conectar"/"Desconectar" button.
+        """Slot of the "Conectar"/"Desconectar" button (ignored while a file is loading).
 
         @return None.
         """
+        if self._loading:
+            return
         if self.reader:
             self.disconnect_serial()
         else:
@@ -761,7 +778,8 @@ class MainWindow(QMainWindow):
         record_dir = Path(self.record_dir_edit.text()).expanduser() if self.record_chk.isChecked() else None
         ## New reader thread for this connection; its signals are queued to the GUI thread.
         self.reader = SerialReader(
-            port, baud, self.reconnect_chk.isChecked(), record_dir, self.pc_time_chk.isChecked(), self
+            port, baud, self.reconnect_chk.isChecked(), record_dir, self.pc_time_chk.isChecked(),
+            self.reset_chk.isChecked(), self
         )
         self.reader.entries_ready.connect(self.on_entries)
         self.reader.status_changed.connect(self.on_status)
@@ -803,8 +821,8 @@ class MainWindow(QMainWindow):
         @return None.
         """
         self.connect_btn.setText("Desconectar" if running else "Conectar")
-        for w in (self.port_combo, self.baud_combo, self.reconnect_chk, self.record_chk,
-                  self.record_dir_edit, self.pc_time_chk):
+        for w in (self.port_combo, self.baud_combo, self.reset_chk, self.reconnect_chk, self.record_chk,
+                  self.record_dir_edit, self.pc_time_chk, self.open_act):
             w.setEnabled(not running)
 
     def on_status(self, msg: str, connected: bool) -> None:
@@ -868,8 +886,12 @@ class MainWindow(QMainWindow):
     def clear(self) -> None:
         """Clear the screen (model) and the counters; the continuous recording is not affected.
 
+        Ignored while a file is loading.
+
         @return None.
         """
+        if self._loading:
+            return
         self.model.clear()
         self._update_counts()
 
@@ -1082,6 +1104,8 @@ class MainWindow(QMainWindow):
 
         @return None.
         """
+        if self._loading or self.reader:
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Abrir log", self.settings.value("save_dir", str(Path.home())), "Log (*.log *.txt);;Todos (*)"
         )
@@ -1097,14 +1121,25 @@ class MainWindow(QMainWindow):
         Current level/TAG/search filters apply to the loaded lines and the memory
         limit still applies (a file bigger than it keeps only its end).
 
+        While loading, the connect button and "Abrir log…" are disabled and
+        connect, open and clear are refused, so the events processed between
+        batches cannot mix serial lines or another file into this one. Closing the
+        window stops the load.
+
         @param path  File to open (UTF-8; invalid bytes are replaced; a malformed PC
                      time prefix is kept as part of the line).
         @return None.
         """
+        if self._loading:
+            return
         if self.reader:
             QMessageBox.warning(self, APP_NAME, "Desconecte a serial antes de abrir um arquivo.")
             return
         self.clear()
+        self._loading = True
+        self.connect_btn.setEnabled(False)
+        self.open_act.setEnabled(False)
+        self.on_status(f"Carregando {path}…", False)
         parser = LineParser()
         batch = []
         try:
@@ -1115,9 +1150,15 @@ class MainWindow(QMainWindow):
                         self.on_entries(batch)
                         batch = []
                         QApplication.processEvents()
+                        if self._abort_load:
+                            return
         except OSError as exc:
             QMessageBox.critical(self, APP_NAME, f"Erro ao abrir:\n{exc}")
             return
+        finally:
+            self._loading = False
+            self.connect_btn.setEnabled(True)
+            self.open_act.setEnabled(True)
         if batch:
             self.on_entries(batch)
         self.setWindowTitle(f"{APP_NAME} — {path.name}")
@@ -1146,17 +1187,19 @@ class MainWindow(QMainWindow):
         s = self.settings
         s.setValue("port", self._selected_port())
         s.setValue("baud", self.baud_combo.currentText())
+        s.setValue("reset_on_connect", self.reset_chk.isChecked())
         s.setValue("auto_reconnect", self.reconnect_chk.isChecked())
         s.setValue("record", self.record_chk.isChecked())
         s.setValue("record_dir", self.record_dir_edit.text())
         s.setValue("record_pc_time", self.pc_time_chk.isChecked())
 
     def closeEvent(self, event) -> None:
-        """Qt override: save the settings and stop the serial reader before the window closes.
+        """Qt override: save the settings, stop a file load and the serial reader before the window closes.
 
         @param event  Close event (always accepted).
         @return None.
         """
+        self._abort_load = True
         self._save_settings()
         self.disconnect_serial()
         super().closeEvent(event)

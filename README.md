@@ -34,7 +34,7 @@ python ESP_monitor.py --port /dev/ttyUSB0     # Linux
 python ESP_monitor.py caminho/para/arquivo.log   # reabre um log salvo
 ```
 
-O padrão é **115200 baud** (`CONFIG_ESP_CONSOLE_UART_BAUDRATE` padrão do ESP-IDF). Ao abrir a porta, DTR e RTS ficam desligados, como no `idf.py monitor`, então conectar o monitor **não reseta** a placa.
+O padrão é **115200 baud** (`CONFIG_ESP_CONSOLE_UART_BAUDRATE` padrão do ESP-IDF). Por padrão, ao abrir a porta, DTR e RTS ficam desligados, como no `idf.py monitor`, então conectar o monitor **não reseta** a placa. Para ver o boot desde o início, marque **Resetar ESP32 ao conectar** (veja abaixo).
 
 > Em placas com conversor USB-serial o console costuma ser a UART0; em chips com USB-Serial-JTAG nativo (ESP32-S3, C3, …) ele pode estar nessa porta. Use a porta em que os logs aparecem. Só um programa por vez pode abrir a porta, então feche o `idf.py monitor` antes.
 
@@ -58,16 +58,21 @@ O botão ⟳ atualiza a lista. O campo é editável: também dá para digitar o 
 - **Gravação contínua**:
   - Cada conexão gera um `ESP_AAAAMMDD_HHMMSS_<porta>.log` na pasta escolhida (padrão `~/ESP_logs`).
   - A gravação acontece na thread de leitura, com flush a cada lote, então nada se perde se a interface travar ou se o limite de memória for atingido.
+- **Resetar ESP32 ao conectar**: com a opção marcada, o monitor reseta o ESP32 logo depois de abrir a porta, e o log começa no boot.
+  - O reset é o mesmo "hard reset" do `esptool`: com DTR desligado (GPIO0 em nível alto, boot normal), o RTS (EN) fica ativo por 0,2 s.
+  - Funciona no Windows e no Linux, tanto em placas com conversor USB-serial e circuito de auto-reset (CP210x, CH340, FTDI) quanto no USB-Serial-JTAG nativo (ESP32-S3, C3, C6, H2). No Windows, o DTR é reescrito a cada mudança do RTS, como faz o `esptool`, porque o driver `usbser.sys` só aplica o RTS junto com o DTR.
+  - Só a primeira abertura reseta; as reconexões automáticas não.
+  - Placas sem circuito de auto-reset (EN e GPIO0 sem ligação ao DTR e RTS) não resetam por essa opção.
 - **Reconectar automaticamente**: se a placa reiniciar ou a USB cair, o monitor tenta reabrir a porta a cada 1 s e continua gravando no mesmo arquivo. Sem essa opção, a leitura termina no primeiro erro e o motivo aparece na barra de status.
 - **Salvar** (`Ctrl+S`) salva tudo o que está em memória. **Salvar linhas visíveis** (`Ctrl+Shift+S`) salva só o resultado dos filtros.
-- **Abrir log** (`Ctrl+O`): reabre um `.log` gravado e aplica os filtros de nível, TAG e busca atuais. Só funciona desconectado.
+- **Abrir log** (`Ctrl+O`): reabre um `.log` gravado e aplica os filtros de nível, TAG e busca atuais. Só funciona desconectado. Durante o carregamento, **Conectar**, **Abrir log** e **Limpar tela** ficam bloqueados.
 - **Auto-scroll**: segue o fim do log enquanto a barra de rolagem estiver no final. Basta rolar para cima para "pausar".
 - **Copiar** (`Ctrl+C`) as linhas selecionadas, sem a hora do PC. **Limpar tela** com `Ctrl+L` (não afeta a gravação). **Ir para o fim** com `Ctrl+End`. Passar o mouse sobre a mensagem mostra a linha completa.
 - **Limite em memória** (padrão 200 000 linhas, ajustável de 10 000 a 5 000 000):
   - Acima dele, as linhas mais antigas saem da tela em blocos (o excesso mais 10 % do limite). A barra de status mostra quantas foram descartadas.
   - Elas continuam no arquivo da gravação contínua, que não tem limite.
   - Um limite menor só vale a partir do próximo lote recebido.
-- As preferências (porta, baud, reconexão, pasta e opções de gravação, limite) são lembradas entre execuções, via `QSettings`: no registro do Windows (`HKCU\Software\ESP\ESP_monitor`) ou em `~/.config/ESP/ESP_monitor.conf` no Linux.
+- As preferências (porta, baud, reset ao conectar, reconexão, pasta e opções de gravação, limite) são lembradas entre execuções, via `QSettings`: no registro do Windows (`HKCU\Software\ESP\ESP_monitor`) ou em `~/.config/ESP/ESP_monitor.conf` no Linux.
 
 ## Formato do arquivo `.log`
 
