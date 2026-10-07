@@ -1,15 +1,15 @@
-"""Parser for the ESP-IDF (esp_log) log lines printed by the eALIVE dongle.
+"""Parser for the ESP-IDF (esp_log) log lines printed by an ESP32 running ESP-IDF.
 
 Pure Python (no Qt): it is shared by the serial reader thread, by the GUI when
 a saved .log is reopened, and by the unit tests in tests/test_log_parser.py.
 
-ESP-IDF line format with CONFIG_LOG_COLORS=y (the eALIVE sdkconfig default):
+ESP-IDF line format with CONFIG_LOG_COLORS=y (the ESP-IDF default):
 
     \\033[0;32mI (1234) TAG: message\\033[0m
 
 - Level letter: E (error), W (warning), I (info), D (debug), V (verbose).
 - Timestamp between parentheses: milliseconds since boot
-  (CONFIG_LOG_TIMESTAMP_SOURCE_RTOS, used by eALIVE) or system time
+  (CONFIG_LOG_TIMESTAMP_SOURCE_RTOS, the ESP-IDF default) or system time
   "hh:mm:ss.mmm" (CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM); both are accepted.
 - TAG: everything up to the first ':' (a space after ':' is optional, so
   "wifi:wifi driver task: ..." gives TAG "wifi").
@@ -241,18 +241,21 @@ def parse_saved_line(parser: LineParser, line: str) -> LogEntry:
     """Parse one line of a saved .log file (with or without the PC time prefix).
 
     When the line starts with "[YYYY-MM-DD hh:mm:ss.mmm] " that time becomes
-    LogEntry.pc_time; otherwise the current time is used. Saved files contain
+    LogEntry.pc_time; otherwise (or when the prefix is not a valid date, e.g.
+    "[2026-13-45 ...]") the current time is used and the whole line is parsed. Saved files contain
     no ANSI codes, so continuation lines of multi-line messages come back as
     OTHER.
 
     @param parser  Parser of the file being loaded (keeps state between lines).
     @param line    Line read from the file (trailing CR/LF allowed).
     @return The parsed LogEntry.
-    @throws ValueError  if the prefix matches PC_PREFIX_RE but is not a valid date.
     """
     line = line.rstrip("\r\n")
     m = PC_PREFIX_RE.match(line)
     if m:
-        pc_time = datetime.strptime(m.group(1), PC_TIME_FMT)
+        try:
+            pc_time = datetime.strptime(m.group(1), PC_TIME_FMT)
+        except ValueError:
+            return parser.parse(line)
         return parser.parse(m.group(2), pc_time)
     return parser.parse(line)

@@ -1,8 +1,6 @@
-# eALIVE Monitor
+# ESP Monitor
 
-Monitor serial com interface gráfica (PySide6) para os logs do dongle eALIVE (ESP-IDF 5.4.2). Ele exibe, filtra e grava tudo que o dongle envia pela USB/serial, usando as mesmas cores do `esp_log`.
-
-Para o uso na bancada, junto com o servidor Uptane e o eALIVE Updater, veja [processo-de-atualizacao.md](../../eALIVE/docs/processo-de-atualizacao.md) e [testes.md](../../eALIVE/docs/testes.md).
+Monitor serial com interface gráfica (PySide6) para os logs de placas ESP32 com ESP-IDF. Ele exibe, filtra e grava tudo que a placa envia pela USB/serial, usando as mesmas cores do `esp_log`.
 
 | Nível | Cor | Origem |
 |---|---|---|
@@ -17,7 +15,7 @@ Para o uso na bancada, junto com o servidor Uptane e o eALIVE Updater, veja [pro
 Requer Python 3.10+ no Windows ou no Linux.
 
 ```bash
-cd tools/ealive_monitor
+cd ESP-Monitor
 python -m venv .venv
 # Windows: .venv\Scripts\activate    Linux: source .venv/bin/activate
 pip install -r requirements.txt
@@ -30,15 +28,15 @@ Os testes do parser só precisam de `pytest` (não usam Qt nem porta serial).
 ## Uso
 
 ```bash
-python ealive_monitor.py                         # escolhe a porta na interface
-python ealive_monitor.py --port COM5             # Windows
-python ealive_monitor.py --port /dev/ttyUSB0     # Linux
-python ealive_monitor.py caminho/para/arquivo.log   # reabre um log salvo
+python ESP_monitor.py                         # escolhe a porta na interface
+python ESP_monitor.py --port COM5             # Windows
+python ESP_monitor.py --port /dev/ttyUSB0     # Linux
+python ESP_monitor.py caminho/para/arquivo.log   # reabre um log salvo
 ```
 
-O padrão é **115200 baud** (`CONFIG_ESP_CONSOLE_UART_BAUDRATE` do eALIVE). Ao abrir a porta, DTR e RTS ficam desligados, como no `idf.py monitor`, então conectar o monitor **não reseta** o dongle.
+O padrão é **115200 baud** (`CONFIG_ESP_CONSOLE_UART_BAUDRATE` padrão do ESP-IDF). Ao abrir a porta, DTR e RTS ficam desligados, como no `idf.py monitor`, então conectar o monitor **não reseta** a placa.
 
-> O console primário do eALIVE é a UART0 (via conversor USB-serial), e o USB-Serial-JTAG nativo do ESP32-S3 é console secundário. Use a porta em que os logs aparecem. Só um programa por vez pode abrir a porta, então feche o `idf.py monitor` antes.
+> Em placas com conversor USB-serial o console costuma ser a UART0; em chips com USB-Serial-JTAG nativo (ESP32-S3, C3, …) ele pode estar nessa porta. Use a porta em que os logs aparecem. Só um programa por vez pode abrir a porta, então feche o `idf.py monitor` antes.
 
 **Portas:** a lista vem do `pyserial` e mostra `dispositivo — descrição`:
 - Windows: `COM3`, `COM5`… (veja no Gerenciador de Dispositivos);
@@ -58,9 +56,9 @@ O botão ⟳ atualiza a lista. O campo é editável: também dá para digitar o 
   - "Mostrar só resultados" esconde as demais linhas.
   - Há opção para diferenciar maiúsculas.
 - **Gravação contínua**:
-  - Cada conexão gera um `ealive_AAAAMMDD_HHMMSS_<porta>.log` na pasta escolhida (padrão `~/ealive_logs`).
+  - Cada conexão gera um `ESP_AAAAMMDD_HHMMSS_<porta>.log` na pasta escolhida (padrão `~/ESP_logs`).
   - A gravação acontece na thread de leitura, com flush a cada lote, então nada se perde se a interface travar ou se o limite de memória for atingido.
-- **Reconectar automaticamente**: se o dongle reiniciar ou a USB cair, o monitor tenta reabrir a porta a cada 1 s e continua gravando no mesmo arquivo. Sem essa opção, a leitura termina no primeiro erro e o motivo aparece na barra de status.
+- **Reconectar automaticamente**: se a placa reiniciar ou a USB cair, o monitor tenta reabrir a porta a cada 1 s e continua gravando no mesmo arquivo. Sem essa opção, a leitura termina no primeiro erro e o motivo aparece na barra de status.
 - **Salvar** (`Ctrl+S`) salva tudo o que está em memória. **Salvar linhas visíveis** (`Ctrl+Shift+S`) salva só o resultado dos filtros.
 - **Abrir log** (`Ctrl+O`): reabre um `.log` gravado e aplica os filtros de nível, TAG e busca atuais. Só funciona desconectado.
 - **Auto-scroll**: segue o fim do log enquanto a barra de rolagem estiver no final. Basta rolar para cima para "pausar".
@@ -69,7 +67,7 @@ O botão ⟳ atualiza a lista. O campo é editável: também dá para digitar o 
   - Acima dele, as linhas mais antigas saem da tela em blocos (o excesso mais 10 % do limite). A barra de status mostra quantas foram descartadas.
   - Elas continuam no arquivo da gravação contínua, que não tem limite.
   - Um limite menor só vale a partir do próximo lote recebido.
-- As preferências (porta, baud, reconexão, pasta e opções de gravação, limite) são lembradas entre execuções, via `QSettings`: no registro do Windows (`HKCU\Software\eALIVE\ealive_monitor`) ou em `~/.config/eALIVE/ealive_monitor.conf` no Linux.
+- As preferências (porta, baud, reconexão, pasta e opções de gravação, limite) são lembradas entre execuções, via `QSettings`: no registro do Windows (`HKCU\Software\ESP\ESP_monitor`) ou em `~/.config/ESP/ESP_monitor.conf` no Linux.
 
 ## Formato do arquivo `.log`
 
@@ -86,36 +84,31 @@ A gravação contínua e o **Salvar** usam o mesmo formato (UTF-8, fim de linha 
 ## Classificação das linhas
 
 - Linhas no formato `L (tempo) TAG: mensagem` são classificadas pelo nível e pela TAG. A TAG vai até o primeiro `:`, mesmo sem espaço depois (`wifi:...`).
-- O tempo pode ser em ms desde o boot (`CONFIG_LOG_TIMESTAMP_SOURCE_RTOS`, o do eALIVE) ou `hh:mm:ss.mmm`.
+- O tempo pode ser em ms desde o boot (`CONFIG_LOG_TIMESTAMP_SOURCE_RTOS`, o padrão) ou `hh:mm:ss.mmm`.
 - Os códigos ANSI são removidos do texto exibido e gravado. Linhas sem nível que têm outra cor (ex.: ciano) mantêm a cor na tela.
 - As linhas de continuação de mensagens multi-linha herdam o nível pela cor ANSI ativa.
 - Linhas com `Guru Meditation Error`, `abort() was called`, `Backtrace:` e similares são marcadas como `E` com a TAG `PANIC`.
-- Ao reabrir um `.log` (que não guarda cores), as linhas de continuação sem prefixo aparecem como "Outros".
+- Ao reabrir um `.log` (que não guarda cores), as linhas de continuação sem prefixo aparecem como "Outros". Um prefixo de hora inválido é mantido como parte do texto da linha.
 - Uma linha parada sem `\n` por mais de 0,5 s (ex.: um prompt) é exibida sozinha. Se o resto chegar depois, a linha aparece partida em duas.
 
 ## Como funciona
 
 | Arquivo | Papel |
 |---|---|
-| `ealive_monitor.py` | Janela (PySide6): barras de conexão e gravação, filtros, busca, tabela (`LogModel`/`LogTable`) |
+| `ESP_monitor.py` | Janela (PySide6): barras de conexão e gravação, filtros, busca, tabela (`LogModel`/`LogTable`) |
 | `serial_reader.py` | `SerialReader` (`QThread`): lê a porta, separa as linhas, faz o parse, grava o `.log` e envia lotes à janela |
 | `log_parser.py` | Parser das linhas do `esp_log` (nível, tempo, TAG, cores ANSI, panic). Python puro, testado em `tests/` |
 
 - Cada **Conectar** cria uma thread de leitura. Só ela acessa a porta e o arquivo de gravação.
 - As linhas chegam à janela em lotes, no máximo a cada 50 ms, por sinais Qt. O Qt enfileira os sinais na thread da interface.
-- Cada lote é gravado e recebe `flush` **antes** de ir para a tela. Por isso o limite em memória e um travamento da interface não afetam o `.log`.
+- Cada lote é gravado e recebe `flush` **antes** de ir para a tela. Por isso o limite em memória e um travamento da interface não afetam o `.log`. Se a porta cair, o último lote e a linha incompleta também são gravados antes da reconexão.
 - **Desconectar** sinaliza a thread e espera até 3 s.
-
-## Problemas conhecidos
-
-- A cada 0,5 s, a atualização dos contadores das TAGs refaz o filtro da tabela inteira, uma vez por TAG que recebeu linhas. O gatilho é o sinal `itemChanged` da lista. Com centenas de milhares de linhas em memória, a interface fica lenta e a seleção da tabela se perde. Como paliativo, use um limite em memória menor. Não há perda de dados.
-- Se a porta cair (USB desconectada, reset do dongle), as linhas do último lote ainda não enviado (até ~50 ms) se perdem, inclusive no `.log`.
 
 ## Testes
 
 ```bash
 pip install pytest
-python -m pytest tests          # dentro de tools/ealive_monitor
+python -m pytest tests          # na raiz do repositório
 ```
 
 Os testes cobrem só o `log_parser.py`. A interface e a leitura serial não têm testes automáticos.

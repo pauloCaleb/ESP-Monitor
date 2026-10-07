@@ -40,7 +40,7 @@ class SerialReader(QThread):
     """Worker thread that reads one serial port, parses its lines and records them.
 
     One instance per "Conectar" click. With auto_reconnect the thread survives
-    port errors (dongle reset, USB unplugged): it closes the port, waits
+    port errors (board reset, USB unplugged): it closes the port, waits
     RECONNECT_INTERVAL_S and reopens it, keeping the same recording file. The
     port is opened with DTR and RTS low, like idf.py monitor, so opening it does
     not reset the ESP32-S3 nor put it in download mode.
@@ -65,7 +65,7 @@ class SerialReader(QThread):
         """Store the connection settings; nothing is opened until start() runs run().
 
         @param port            Port name: "COM5" on Windows, "/dev/ttyUSB0" or "/dev/ttyACM0" on Linux.
-        @param baudrate        Baud rate (the eALIVE console uses 115200).
+        @param baudrate        Baud rate (the ESP-IDF console default is 115200).
         @param auto_reconnect  Keep retrying to open the port and reopen it after errors.
         @param record_dir      Folder of the continuous recording, or None to not record.
         @param record_pc_time  Prefix each recorded line with the PC time.
@@ -103,7 +103,7 @@ class SerialReader(QThread):
 
     # -- continuous recording ----------------------------------------------
     def _open_record_file(self) -> None:
-        """Create the recording file "ealive_{YYYYmmdd_HHMMSS}_{port}.log" in record_dir.
+        """Create the recording file "ESP_{YYYYmmdd_HHMMSS}_{port}.log" in record_dir.
 
         Called once per run(), so reconnections keep appending to the same file.
         The port name is sanitised to [A-Za-z0-9_] ("/dev/ttyUSB0" -> "dev_ttyUSB0").
@@ -117,7 +117,7 @@ class SerialReader(QThread):
         try:
             self.record_dir.mkdir(parents=True, exist_ok=True)
             safe_port = "".join(c if c.isalnum() else "_" for c in self.port).strip("_")
-            name = f"ealive_{datetime.now():%Y%m%d_%H%M%S}_{safe_port}.log"
+            name = f"ESP_{datetime.now():%Y%m%d_%H%M%S}_{safe_port}.log"
             path = self.record_dir / name
             self._record_fp = open(path, "a", encoding="utf-8", newline="\n")
             self.record_file_changed.emit(str(path))
@@ -158,7 +158,7 @@ class SerialReader(QThread):
 
         DTR/RTS are set before open() so pyserial applies them when opening.
         On the ESP32-S3 auto-reset circuit (and on the USB-Serial-JTAG) these
-        lines drive EN/GPIO0, so keeping them low avoids resetting the dongle.
+        lines drive EN/GPIO0, so keeping them low avoids resetting the board.
 
         @return The open serial.Serial.
         @throws serial.SerialException  port missing, busy (another monitor open) or no permission
@@ -238,16 +238,13 @@ class SerialReader(QThread):
         idle for more than PARTIAL_FLUSH_S (e.g. a prompt without newline) is
         parsed as a line of its own, so a line interrupted by a pause longer than
         that appears split in two. Pending entries are recorded and emitted at
-        most every BATCH_INTERVAL_S; what is left is flushed when the loop ends
-        normally.
+        most every BATCH_INTERVAL_S; what is left (pending entries and the partial
+        line) is recorded and emitted when the loop ends, also when it ends with
+        an I/O error, so the last lines before a USB drop or reset are kept.
 
         @param ser  Open port returned by _open_serial().
         @throws serial.SerialException, OSError  when the port disappears; run()
                 handles it.
-        @bug (novo) When the port fails, the entries still in `pending` (up to
-             BATCH_INTERVAL_S of lines) and the partial line in `buf` are dropped
-             without being recorded or shown: the last lines before a USB drop or
-             a dongle reset can be lost, also from the continuous .log.
 
         @return None.
         """
@@ -255,31 +252,33 @@ class SerialReader(QThread):
         pending = []
         last_emit = time.monotonic()
         last_rx = last_emit
-        while not self._stop:
-            chunk = ser.read(ser.in_waiting or 1)
-            now = time.monotonic()
-            if chunk:
-                buf.extend(chunk)
-                last_rx = now
-                while True:
-                    nl = buf.find(b"\n")
-                    if nl < 0:
-                        break
-                    line = bytes(buf[:nl]).decode("utf-8", errors="replace").rstrip("\r")
-                    del buf[: nl + 1]
-                    pending.append(self._parser.parse(line))
-            elif buf and now - last_rx > PARTIAL_FLUSH_S:
-                # Idle incomplete line (e.g. a prompt without '\n')
-                pending.append(self._parser.parse(bytes(buf).decode("utf-8", errors="replace")))
-                buf.clear()
+        try:
+            while not self._stop:
+                chunk = ser.read(ser.in_waiting or 1)
+                now = time.monotonic()
+                if chunk:
+                    buf.extend(chunk)
+                    last_rx = now
+                    while True:
+                        nl = buf.find(b"\n")
+                        if nl < 0:
+                            break
+                        line = bytes(buf[:nl]).decode("utf-8", errors="replace").rstrip("\r")
+                        del buf[: nl + 1]
+                        pending.append(self._parser.parse(line))
+                elif buf and now - last_rx > PARTIAL_FLUSH_S:
+                    # Idle incomplete line (e.g. a prompt without '\n')
+                    pending.append(self._parser.parse(bytes(buf).decode("utf-8", errors="replace")))
+                    buf.clear()
 
-            if pending and now - last_emit >= BATCH_INTERVAL_S:
+                if pending and now - last_emit >= BATCH_INTERVAL_S:
+                    self._record(pending)
+                    self.entries_ready.emit(pending)
+                    pending = []
+                    last_emit = now
+        finally:
+            if buf:
+                pending.append(self._parser.parse(bytes(buf).decode("utf-8", errors="replace")))
+            if pending:
                 self._record(pending)
                 self.entries_ready.emit(pending)
-                pending = []
-                last_emit = now
-        if buf:
-            pending.append(self._parser.parse(bytes(buf).decode("utf-8", errors="replace")))
-        if pending:
-            self._record(pending)
-            self.entries_ready.emit(pending)

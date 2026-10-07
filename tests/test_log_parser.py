@@ -1,13 +1,13 @@
 """Unit tests of log_parser (pure Python, no Qt and no serial port needed).
 
-Run from tools/ealive_monitor with: python -m pytest tests
+Run from the repository root with: python -m pytest tests
 """
 
 import sys
 from datetime import datetime
 from pathlib import Path
 
-# Make log_parser importable without installing the tool (tests/ -> tools/ealive_monitor/).
+# Make log_parser importable without installing the tool (tests/ -> repository root).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from log_parser import OTHER, LineParser, parse_saved_line  # noqa: E402
@@ -81,3 +81,9 @@ def test_saved_line_roundtrip():
     back = parse_saved_line(LineParser(), text + "\n")
     assert (back.pc_time, back.level, back.tag, back.raw) == (e.pc_time, "I", "A", e.raw)
     assert parse_saved_line(LineParser(), "W (2) B: c").level == "W"
+
+
+def test_saved_line_with_invalid_pc_time():
+    """A PC prefix that is not a valid date does not raise: the whole line is kept as text."""
+    e = parse_saved_line(LineParser(), "[2026-13-45 99:99:99.999] I (1) A: b\n")
+    assert e.level == OTHER and e.raw == "[2026-13-45 99:99:99.999] I (1) A: b"

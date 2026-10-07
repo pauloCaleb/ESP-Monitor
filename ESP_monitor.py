@@ -502,7 +502,7 @@ class MainWindow(QMainWindow):
 
         ## "Reconectar automaticamente" option.
         self.reconnect_chk = QCheckBox("Reconectar automaticamente")
-        self.reconnect_chk.setToolTip("Reabre a porta se o dongle reiniciar ou a USB cair")
+        self.reconnect_chk.setToolTip("Reabre a porta se a placa reiniciar ou a USB cair")
         self.reconnect_chk.setChecked(self.settings.value("auto_reconnect", True, type=bool))
         tb.addSeparator()
         tb.addWidget(self.reconnect_chk)
@@ -849,20 +849,19 @@ class MainWindow(QMainWindow):
     def _update_counts(self) -> None:
         """Timer slot (every 500 ms): refresh the level and TAG counters and the "visíveis / linhas / descartadas" status.
 
-        @bug (novo) QListWidgetItem.setText() on a TAG item whose counter changed
-             emits QListWidget.itemChanged, which is connected to
-             _tag_item_changed(), so every tick runs one LogModel.refilter() (full
-             model reset over all entries in memory) per TAG that received lines.
-             With hundreds of thousands of lines this freezes the GUI periodically
-             and the reset also clears the selected row. It does not lose data.
+        Signals of the TAG list are blocked while the counters are written:
+        QListWidgetItem.setText() emits itemChanged, which would run a full
+        refilter() per TAG through _tag_item_changed().
 
         @return None.
         """
         m = self.model
         for lv, chk in self.level_checks.items():
             chk.setText(f"{lv}  {LEVEL_NAMES[lv]} ({m.level_counts[lv]})")
+        self.tag_list.blockSignals(True)
         for tag, item in self.tag_items.items():
             item.setText(f"{tag or NO_TAG_LABEL} ({m.tag_counts.get(tag, 0)})")
+        self.tag_list.blockSignals(False)
         trimmed = f" · {m.trimmed} descartadas da memória" if m.trimmed else ""
         self.status_counts.setText(f"{len(m.visible)} visíveis / {len(m.entries)} linhas{trimmed}")
 
@@ -918,7 +917,6 @@ class MainWindow(QMainWindow):
         """Slot of QListWidget.itemChanged: show or hide a TAG according to its check state and refilter.
 
         @param item  Changed item (its UserRole data is the TAG).
-        @note Also triggered by the counter text updates of _update_counts() (see the @bug there).
         @return None.
         """
         tag = item.data(Qt.UserRole)
@@ -1099,7 +1097,8 @@ class MainWindow(QMainWindow):
         Current level/TAG/search filters apply to the loaded lines and the memory
         limit still applies (a file bigger than it keeps only its end).
 
-        @param path  File to open (UTF-8; invalid bytes are replaced).
+        @param path  File to open (UTF-8; invalid bytes are replaced; a malformed PC
+                     time prefix is kept as part of the line).
         @return None.
         """
         if self.reader:
